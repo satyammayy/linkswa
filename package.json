@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@adiwajshing/baileys": "^5.0.0",
+    "@open-wa/wa-automate": "^4.66.3"
+  }
+}
