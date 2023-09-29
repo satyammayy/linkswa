@@ -2,8 +2,11 @@ const { create, Client } = require('@open-wa/wa-automate');
 const fs = require('fs');
 const axios = require('axios');
 
-// Directory to store links files for different groups
+// Directory to store links files
 const linksDirectory = './links/';
+const friendlyLinksFile = `${linksDirectory}links_friendly.json`;
+const enemyLinksFile = `${linksDirectory}links_enemy.json`;
+let currentLinks = [];
 
 create().then((client) => start(client));
 
@@ -14,40 +17,60 @@ function start(client) {
     if (message.body) {
       const body = message.body.toLowerCase().trim();
       const chatId = message.from;
-      const groupId = message.chatId;
-
-      // Create a links file for the group if it doesn't exist
-      const groupLinksFile = `${linksDirectory}${groupId}.json`;
-      if (!fs.existsSync(groupLinksFile)) {
-        fs.writeFileSync(groupLinksFile, '[]', 'utf8');
-      }
 
       if (body.startsWith('/add')) {
         const link = body.substring(5).trim();
+        const linkCategory = 'friendly'; // Default to 'friendly' category
         if (isValidTwitterLink(link)) {
           const timestamp = await getCurrentTime();
           if (timestamp) {
-            addLinkToJSON(groupLinksFile, link, timestamp);
-            await client.sendText(chatId, 'Link added successfully!');
+            addLinkToJSON(link, timestamp, linkCategory, chatId, client);
+            await client.sendText(chatId, 'Link added successfully to friendly links!');
           } else {
             await client.sendText(chatId, 'Error fetching time. Link not added.');
           }
         } else {
           await client.sendText(
             chatId,
-            "Please check the URL and add only Twitter URLs starting with 'https://x.com/twitter'."
+            "Please check the URL and add only Twitter URLs starting with 'https://x.com/'."
+          );
+        }
+      } else if (body.startsWith('/report')) {
+        const link = body.substring(8).trim();
+        const linkCategory = 'enemy'; // Report links go to 'enemy' category
+        if (isValidTwitterLink(link)) {
+          const timestamp = await getCurrentTime();
+          if (timestamp) {
+            addLinkToJSON(link, timestamp, linkCategory, chatId, client);
+            await client.sendText(chatId, 'Links  successfully added to enemy links!');
+          } else {
+            await client.sendText(chatId, 'Error fetching time. Link not reported.');
+          }
+        } else {
+          await client.sendText(
+            chatId,
+            "Please check the URL and report only Twitter URLs starting with 'https://x.com/'."
           );
         }
       } else if (body === '/links') {
-        const links = getLinksFromJSON(groupLinksFile);
-        if (links.length === 0) {
-          await client.sendText(chatId, 'No links found.');
-        } else {
-          const formattedLinks = links
-            .map((link) => `${link.url} (Added on ${link.timestamp})`)
-            .join('\n');
-          await client.sendText(chatId, `Here are the links:\n\n${formattedLinks}`);
-        }
+        // Ask the user which category to get links from
+        await client.sendText(
+          chatId,
+          'Choose the category to get links from:\n1. Friendly Links\n2. Enemy Links'
+        );
+
+        // Listen for user's category choice
+        client.onMessage(async (choiceMessage) => {
+          if (choiceMessage.body === '1') {
+            const links = getAllLinksFromJSON('friendly');
+            await client.sendText(chatId,'Friendly links:' )
+            await sendLinksInGroupsOf8(client, chatId, links);
+          } else if (choiceMessage.body === '2') {
+            const links = getAllLinksFromJSON('enemy');
+            await client.sendText(chatId,'Report links:' )
+            await sendLinksInGroupsOf8(client, chatId, links);
+          }
+        });
       }
     }
   });
@@ -55,7 +78,7 @@ function start(client) {
 
 function isValidTwitterLink(link) {
   // Check if the link is a valid Twitter link starting with 'https://x.com/twitter'
-  return link.startsWith('https://x.com/twitter');
+  return link.startsWith('https://x.com/');
 }
 
 async function getCurrentTime() {
@@ -69,24 +92,67 @@ async function getCurrentTime() {
   }
 }
 
-function addLinkToJSON(filename, url, timestamp) {
-  // Read the existing links from the JSON file
-  let links = [];
-  if (fs.existsSync(filename)) {
-    links = JSON.parse(fs.readFileSync(filename, 'utf8'));
+function addLinkToJSON(url, timestamp, category, chatId, client) {
+    // Determine the appropriate JSON file based on the category
+    const linksFile = category === 'friendly' ? friendlyLinksFile : enemyLinksFile;
+  
+    // Read the existing links from the current links file
+    if (!fs.existsSync(linksDirectory)) {
+      fs.mkdirSync(linksDirectory);
+    }
+  
+    if (fs.existsSync(linksFile)) {
+      currentLinks = JSON.parse(fs.readFileSync(linksFile, 'utf8'));
+    }
+  
+    // Check if the link already exists
+    const existingLink = currentLinks.find((linkObj) => linkObj.url === url);
+    if (existingLink) {
+      // Link already exists, notify the user
+      const message = `Link '${url}' is already in the list (Added on ${existingLink.timestamp}).`;
+      client.sendText(chatId, message);
+      return; // Return here to prevent adding duplicate links
+    }
+  
+    // Add the new link with its timestamp
+    currentLinks.push({ url, timestamp });
+  
+    // Write all links back to the appropriate JSON file
+    fs.writeFileSync(linksFile, JSON.stringify(currentLinks, null, 2), 'utf8');
+  
+    // Send the "Link added successfully" message
+    const successMessage = 'Link added successfully!';
+    client.sendText(chatId, successMessage);
   }
+  
 
-  // Add the new link with its timestamp
-  links.push({ url, timestamp });
 
-  // Write the updated links back to the JSON file
-  fs.writeFileSync(filename, JSON.stringify(links, null, 2), 'utf8');
-}
+function getAllLinksFromJSON(category) {
+  // Determine the appropriate JSON file based on the category
+  const linksFile = category === 'friendly' ? friendlyLinksFile : enemyLinksFile;
 
-function getLinksFromJSON(filename) {
-  // Read and return the links from the JSON file
-  if (fs.existsSync(filename)) {
-    return JSON.parse(fs.readFileSync(filename, 'utf8'));
+  // Read and return all links from the selected links file
+  if (fs.existsSync(linksFile)) {
+    return JSON.parse(fs.readFileSync(linksFile, 'utf8'));
   }
   return [];
+}
+
+function sendLinksInGroupsOf8(client, chatId, links) {
+  // Send links in groups of 8 per message
+  const linkChunks = chunkArray(links, 8);
+  for (const chunk of linkChunks) {
+    const formattedLinks = chunk
+      .map((link) => `${link.url} (Added on ${link.timestamp})`)
+      .join('\n');
+    client.sendText(chatId, `Here are the links:\n\n${formattedLinks}`);
+  }
+}
+
+function chunkArray(array, chunkSize) {
+  const chunks = [];
+  for (let i = 0; i < array.length; i += chunkSize) {
+    chunks.push(array.slice(i, i + chunkSize));
+  }
+  return chunks;
 }
